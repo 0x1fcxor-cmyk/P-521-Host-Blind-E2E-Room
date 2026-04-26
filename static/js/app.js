@@ -258,7 +258,7 @@ async function joinRoom() {
 }
 
 function hideAllMainSections() {
-    UI.tabs.forEach(tab => byId(`${tabName}Tab`)?.classList.add('hidden'));
+    UI.tabs.forEach(tab => byId(`${tab}Tab`)?.classList.add('hidden'));
     $$('#mainTabs .nav-link').forEach(link => link.classList.remove('active'));
 }
 
