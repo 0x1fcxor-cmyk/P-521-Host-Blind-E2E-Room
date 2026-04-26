@@ -493,7 +493,7 @@ async def host_blind_relay() -> None:
     relay_mode = config.get("relay_mode", "cloudflare")
     
     if relay_mode == "cloudflare":
-        tunnel = await start_cloudflare_tunnel(local_port, token)
+        tunnel = await start_cloudflare_tunnel(local_port)
         relay_link = build_relay_link(tunnel.url, token)
     else:
         # Placeholder for other modes
