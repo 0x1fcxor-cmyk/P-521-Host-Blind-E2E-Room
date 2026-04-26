@@ -277,7 +277,7 @@ async def start_cloudflare_tunnel(port: int) -> CloudflareTunnel:
     
     try:
         process = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"ws://127.0.0.1:{port}"],
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
