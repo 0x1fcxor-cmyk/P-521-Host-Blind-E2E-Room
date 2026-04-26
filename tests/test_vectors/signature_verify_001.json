@@ -1,0 +1,29 @@
+{
+  "test_id": "signature_verify_001",
+  "description": "Test P-521 signature verification on envelope",
+  "protocol_version": "P521-HOST-BLIND-E2E-V1",
+  "inputs": {
+    "identity_private_pem": "-----BEGIN PRIVATE KEY-----\nMIIBeQIBADANBgkqhkiG9w0BAQEFAASBFMwQJTAiBgkqhkiG9w0BQoF\n-----END PRIVATE KEY-----",
+    "envelope_without_signature": {
+      "type": "e2e",
+      "protocol": "P521-HOST-BLIND-E2E-V1",
+      "room_id": "TEST_ROOM_ID",
+      "sender_fp": "ABC123DEF456",
+      "sender_public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----",
+      "nonce_prefix": "NONCE_BASE64",
+      "counter": 1,
+      "ciphertext": "CIPHERTEXT_BASE64",
+      "compressed": true
+    }
+  },
+  "expected": {
+    "signature_base64": "SIGNATURE_BASE64",
+    "signature_valid": true
+  },
+  "notes": [
+    "Signature is P-521 ECDSA with SHA-512",
+    "Signed data includes 'P521-HOST-BLIND-SIGNATURE-V1|' prefix",
+    "Envelope is canonicalized (sorted keys, no spaces) before signing",
+    "Verification should fail if any field is modified"
+  ]
+}

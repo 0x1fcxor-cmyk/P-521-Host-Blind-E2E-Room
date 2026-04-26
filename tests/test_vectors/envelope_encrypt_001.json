@@ -1,0 +1,32 @@
+{
+  "test_id": "envelope_encrypt_001",
+  "description": "Test envelope encryption with room key",
+  "protocol_version": "P521-HOST-BLIND-E2E-V1",
+  "inputs": {
+    "room_key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "packet": {
+      "kind": "chat",
+      "body": "Hello, world!"
+    },
+    "identity": {
+      "fingerprint": "ABC123DEF456",
+      "display_name": "TestUser"
+    }
+  },
+  "expected": {
+    "room_id": "SHA256_DERIVED_ROOM_ID",
+    "envelope_type": "e2e",
+    "sender_fp": "ABC123DEF456",
+    "sender_name": "TestUser",
+    "ciphertext_base64": "ENCRYPTED_PAYLOAD_BASE64",
+    "nonce_prefix_base64": "NONCE_PREFIX_BASE64",
+    "counter": 1,
+    "compressed": true
+  },
+  "notes": [
+    "Room key is derived using HKDF-SHA512 with context '0x1FC/room/key/v1'",
+    "Nonce is 12 bytes (4 byte prefix + 8 byte counter)",
+    "AAD includes protocol version, room_id, and counter",
+    "Ciphertext is AES-256-GCM encrypted"
+  ]
+}

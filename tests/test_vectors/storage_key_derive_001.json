@@ -1,0 +1,26 @@
+{
+  "test_id": "storage_key_derive_001",
+  "description": "Test storage key derivation with Argon2id",
+  "protocol_version": "P521-HOST-BLIND-E2E-V1",
+  "inputs": {
+    "password": "test_password_12345678",
+    "salt_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "argon2id_params": {
+      "time_cost": 3,
+      "memory_cost": 262144,
+      "parallelism": 4,
+      "hash_len": 32,
+      "salt_len": 16,
+      "type": "ID"
+    }
+  },
+  "expected": {
+    "storage_key_hex": "EXPECTED_ARGON2ID_OUTPUT_HEX"
+  },
+  "notes": [
+    "Argon2id is used for password hardening",
+    "Parameters: 256MB memory, 3 iterations, 4 parallelism",
+    "Falls back to PBKDF2-SHA512 with 600K iterations if argon2-cffi not available",
+    "Output is 32 bytes (256 bits)"
+  ]
+}

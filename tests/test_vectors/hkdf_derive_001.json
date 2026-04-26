@@ -1,0 +1,20 @@
+{
+  "test_id": "hkdf_derive_001",
+  "description": "Test HKDF-SHA512 key derivation with labeled context",
+  "protocol_version": "P521-HOST-BLIND-E2E-V1",
+  "inputs": {
+    "ikm_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "salt_hex": "feedfacecafebabedeadbeeffeedfacecafebabedeadbeeffeedfacecafebabe",
+    "info": "0x1FC/room/key/v1",
+    "length": 32
+  },
+  "expected": {
+    "output_key_hex": "EXPECTED_HKDF_OUTPUT_HEX"
+  },
+  "notes": [
+    "HKDF-SHA512 is used for all key derivation",
+    "Labeled contexts prevent key reuse between purposes",
+    "Salt can be empty bytes if not needed",
+    "Info parameter provides context separation"
+  ]
+}
