@@ -659,16 +659,6 @@ async function sendMessage() {
         if (data.success) {
             messageInput.value = '';
             messagesSent++;
-            const messageData = {
-                type: 'sent',
-                content: message,
-                timestamp: new Date().toISOString(),
-                sender: 'You',
-                id: Date.now(),
-                selfDestruct: selfDestructEnabled ? selfDestructTime : null
-            };
-            messageHistory.push(messageData);
-            displayMessage(messageData);
             
             // Log activity
             addActivity('message', 'Sent a message');
