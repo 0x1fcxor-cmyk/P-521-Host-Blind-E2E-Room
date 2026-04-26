@@ -90,6 +90,36 @@ The web UI provides a modern interface with:
 - Message search
 - Dark mode support
 
+### Running a Portable Relay Server
+
+For users who need a WebSocket relay server, a portable standalone relay is included:
+
+```bash
+# Generate a secure token
+python run_relay.py --generate-token
+
+# Start the relay server with a custom token
+python run_relay.py --token YOUR_SECRET_TOKEN --port 8080
+
+# Start on all interfaces (for remote access)
+python run_relay.py --token YOUR_SECRET_TOKEN --host 0.0.0.0 --port 8080
+
+# Start with default settings (generates random token)
+python run_relay.py
+```
+
+The relay server:
+- Cannot decrypt E2E encrypted content (blind relay)
+- Supports up to 100 concurrent clients (configurable)
+- Includes rate limiting (100 messages per 60 seconds per client)
+- Provides health monitoring and statistics
+- Requires authentication via token
+
+Once running, use the relay URL in the web UI or CLI:
+```
+ws://your-host:port/chat?token=YOUR_TOKEN
+```
+
 ### Running Tests
 
 ```bash
@@ -112,6 +142,7 @@ e2e/
 ├── tests/               # Unit tests
 ├── main.py              # CLI entry point
 ├── web_ui.py            # Web UI server
+├── run_relay.py         # Portable WebSocket relay server
 └── 0x1FC_p-521_E2E_SecureComs.py  # Core crypto module
 ```
 
