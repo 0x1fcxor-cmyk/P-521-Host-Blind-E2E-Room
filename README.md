@@ -104,6 +104,9 @@ python run_relay.py --token YOUR_SECRET_TOKEN --port 8080
 # Start on all interfaces (for remote access)
 python run_relay.py --token YOUR_SECRET_TOKEN --host 0.0.0.0 --port 8080
 
+# Start with Cloudflare tunnel for public access (no port forwarding needed)
+python run_relay.py --token YOUR_SECRET_TOKEN --cloudflare
+
 # Start with default settings (generates random token)
 python run_relay.py
 ```
@@ -114,10 +117,24 @@ The relay server:
 - Includes rate limiting (100 messages per 60 seconds per client)
 - Provides health monitoring and statistics
 - Requires authentication via token
+- Optional Cloudflare tunnel for public hosting
+
+**Cloudflare Tunnel for Public Hosting:**
+
+To make your relay server publicly accessible without port forwarding, use the `--cloudflare` flag. This requires `cloudflared` to be installed:
+
+1. Install cloudflared from [Cloudflare's installation guide](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/)
+2. Run the relay with Cloudflare tunnel:
+   ```bash
+   python run_relay.py --token YOUR_TOKEN --cloudflare
+   ```
+3. The server will display a public URL that anyone can use to connect
 
 Once running, use the relay URL in the web UI or CLI:
 ```
 ws://your-host:port/chat?token=YOUR_TOKEN
+# Or with Cloudflare tunnel:
+https://your-cloudflare-url/chat?token=YOUR_TOKEN
 ```
 
 ### Running Tests

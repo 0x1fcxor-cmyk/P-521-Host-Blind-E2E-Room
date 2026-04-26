@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from relay.server import BlindRelayServer, info, warn, log_security_event
 from core.constants import console, PROTOCOL_VERSION
+from transport.cloudflare import start_cloudflare_tunnel, stop_cloudflare_tunnel, cloudflared_exists
 
 
 def generate_token() -> str:
@@ -84,7 +85,7 @@ async def handle_client(relay: BlindRelayServer, client_id: str, ws, path: str):
         await relay.remove(client_id)
 
 
-async def main_server(host: str, port: int, token: str, max_clients: int):
+async def main_server(host: str, port: int, token: str, max_clients: int, use_cloudflare: bool = False):
     """
     Main server loop
     
@@ -93,11 +94,29 @@ async def main_server(host: str, port: int, token: str, max_clients: int):
         port: Port to listen on
         token: Authentication token
         max_clients: Maximum number of concurrent clients
+        use_cloudflare: Whether to use Cloudflare tunnel for public access
     """
     import websockets
     
     relay = BlindRelayServer(token)
     relay.max_clients = max_clients
+    
+    tunnel = None
+    public_url = None
+    
+    if use_cloudflare:
+        if not cloudflared_exists():
+            warn("cloudflared not found. Install from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/")
+            warn("Falling back to local hosting only")
+        else:
+            try:
+                info("Starting Cloudflare tunnel for public access...")
+                tunnel = await start_cloudflare_tunnel(port)
+                public_url = tunnel.url
+                info(f"Cloudflare tunnel established: {public_url}")
+            except Exception as e:
+                warn(f"Failed to start Cloudflare tunnel: {e}")
+                warn("Falling back to local hosting only")
     
     info(f"Starting P-521 Blind Relay Server")
     info(f"Protocol Version: {PROTOCOL_VERSION}")
@@ -105,7 +124,12 @@ async def main_server(host: str, port: int, token: str, max_clients: int):
     info(f"Host: {host}")
     info(f"Port: {port}")
     info(f"Max Clients: {max_clients}")
-    info(f"Relay URL: ws://{host}:{port}/chat?token={token}")
+    
+    if public_url:
+        info(f"Public Relay URL: {public_url}/chat?token={token}")
+        info(f"Local Relay URL: ws://{host}:{port}/chat?token={token}")
+    else:
+        info(f"Relay URL: ws://{host}:{port}/chat?token={token}")
     
     # Start stats loop
     stats_task = asyncio.create_task(relay.stats_loop())
@@ -146,6 +170,15 @@ async def main_server(host: str, port: int, token: str, max_clients: int):
         raise
     finally:
         stats_task.cancel()
+        
+        # Stop Cloudflare tunnel if running
+        if tunnel:
+            try:
+                stop_cloudflare_tunnel(tunnel)
+                info("Cloudflare tunnel stopped")
+            except Exception as e:
+                warn(f"Failed to stop Cloudflare tunnel: {e}")
+        
         info(f"Relay server stopped. Total clients served: {len(relay.clients)}")
 
 
@@ -162,8 +195,11 @@ Examples:
   # Start server with custom token
   python run_relay.py --token my_secret_token --port 8080
   
-  # Start server on all interfaces
+  # Start on all interfaces (for remote access)
   python run_relay.py --token my_secret_token --host 0.0.0.0 --port 8080
+  
+  # Start with Cloudflare tunnel for public access
+  python run_relay.py --token my_secret_token --cloudflare
   
   # Start with default settings (generates random token)
   python run_relay.py
@@ -204,6 +240,12 @@ Examples:
         help="Maximum concurrent clients (default: 100)"
     )
     
+    parser.add_argument(
+        "--cloudflare",
+        action="store_true",
+        help="Use Cloudflare tunnel for public access (requires cloudflared)"
+    )
+    
     args = parser.parse_args()
     
     # Generate token if requested
@@ -222,7 +264,7 @@ Examples:
     
     # Run server
     try:
-        asyncio.run(main_server(args.host, args.port, token, args.max_clients))
+        asyncio.run(main_server(args.host, args.port, token, args.max_clients, args.cloudflare))
     except KeyboardInterrupt:
         info("Server stopped by user")
     except Exception as e:
