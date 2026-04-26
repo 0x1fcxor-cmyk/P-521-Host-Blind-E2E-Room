@@ -117,10 +117,11 @@ def save_identity(identity: Identity, password: str) -> None:
 
 
 def load_identity(password: str) -> Optional[Identity]:
-    """Load identity from disk using the main application's function"""
+    """Load identity from disk using the identity module"""
     try:
-        # Use the main application's load_identity_from_file function
-        return securecoms.load_identity_from_file(password)
+        # Import from identity.keys which handles string passwords properly
+        from identity.keys import load_identity_from_file
+        return load_identity_from_file(password)
     except ValueError as e:
         print(f"[DEBUG] load_identity ValueError: {e}")
         return None
