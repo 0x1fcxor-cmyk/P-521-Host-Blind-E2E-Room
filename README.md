@@ -92,23 +92,23 @@ The web UI provides a modern interface with:
 
 ### Running a Portable Relay Server
 
-For users who need a WebSocket relay server, a portable standalone relay is included:
+For users who need a WebSocket relay server, a portable standalone relay is included. Cloudflare tunnel is enabled by default for easy public hosting:
 
 ```bash
+# Start server with default settings (Cloudflare tunnel enabled)
+python run_relay.py
+
 # Generate a secure token
 python run_relay.py --generate-token
 
 # Start the relay server with a custom token
 python run_relay.py --token YOUR_SECRET_TOKEN --port 8080
 
-# Start on all interfaces (for remote access)
+# Start with local hosting only (no Cloudflare tunnel)
+python run_relay.py --token YOUR_SECRET_TOKEN --no-cloudflare
+
+# Start on all interfaces with Cloudflare tunnel
 python run_relay.py --token YOUR_SECRET_TOKEN --host 0.0.0.0 --port 8080
-
-# Start with Cloudflare tunnel for public access (no port forwarding needed)
-python run_relay.py --token YOUR_SECRET_TOKEN --cloudflare
-
-# Start with default settings (generates random token)
-python run_relay.py
 ```
 
 The relay server:
@@ -117,24 +117,28 @@ The relay server:
 - Includes rate limiting (100 messages per 60 seconds per client)
 - Provides health monitoring and statistics
 - Requires authentication via token
-- Optional Cloudflare tunnel for public hosting
+- **Cloudflare tunnel enabled by default for public hosting**
 
-**Cloudflare Tunnel for Public Hosting:**
+**Cloudflare Tunnel (Default):**
 
-To make your relay server publicly accessible without port forwarding, use the `--cloudflare` flag. This requires `cloudflared` to be installed:
+By default, the relay server uses Cloudflare tunnel for public access without port forwarding. This requires `cloudflared` to be installed:
 
 1. Install cloudflared from [Cloudflare's installation guide](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/)
-2. Run the relay with Cloudflare tunnel:
+2. Run the relay server:
    ```bash
-   python run_relay.py --token YOUR_TOKEN --cloudflare
+   python run_relay.py
    ```
 3. The server will display a public URL that anyone can use to connect
 
+To disable Cloudflare tunnel and use local hosting only, use the `--no-cloudflare` flag.
+
 Once running, use the relay URL in the web UI or CLI:
 ```
-ws://your-host:port/chat?token=YOUR_TOKEN
-# Or with Cloudflare tunnel:
+# With Cloudflare tunnel (default):
 https://your-cloudflare-url/chat?token=YOUR_TOKEN
+
+# Local hosting only:
+ws://your-host:port/chat?token=YOUR_TOKEN
 ```
 
 ### Running Tests

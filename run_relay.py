@@ -192,17 +192,17 @@ Examples:
   # Generate a secure token
   python run_relay.py --generate-token
   
+  # Start server with default settings (Cloudflare tunnel enabled by default)
+  python run_relay.py
+  
   # Start server with custom token
   python run_relay.py --token my_secret_token --port 8080
   
-  # Start on all interfaces (for remote access)
+  # Start with local hosting only (no Cloudflare tunnel)
+  python run_relay.py --token my_secret_token --no-cloudflare
+  
+  # Start on all interfaces with Cloudflare tunnel
   python run_relay.py --token my_secret_token --host 0.0.0.0 --port 8080
-  
-  # Start with Cloudflare tunnel for public access
-  python run_relay.py --token my_secret_token --cloudflare
-  
-  # Start with default settings (generates random token)
-  python run_relay.py
         """
     )
     
@@ -243,7 +243,14 @@ Examples:
     parser.add_argument(
         "--cloudflare",
         action="store_true",
-        help="Use Cloudflare tunnel for public access (requires cloudflared)"
+        default=True,
+        help="Use Cloudflare tunnel for public access (default: True, requires cloudflared)"
+    )
+    
+    parser.add_argument(
+        "--no-cloudflare",
+        action="store_true",
+        help="Disable Cloudflare tunnel and use local hosting only"
     )
     
     args = parser.parse_args()
@@ -262,9 +269,12 @@ Examples:
         info(f"Generated token: {token}")
         info(f"Save this token to reuse it, or it will change each run")
     
+    # Determine if Cloudflare tunnel should be used
+    use_cloudflare = args.cloudflare and not args.no_cloudflare
+    
     # Run server
     try:
-        asyncio.run(main_server(args.host, args.port, token, args.max_clients, args.cloudflare))
+        asyncio.run(main_server(args.host, args.port, token, args.max_clients, use_cloudflare))
     except KeyboardInterrupt:
         info("Server stopped by user")
     except Exception as e:
