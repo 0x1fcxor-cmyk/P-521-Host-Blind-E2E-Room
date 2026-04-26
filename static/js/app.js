@@ -1,154 +1,159 @@
-// P-521 Web UI - Frontend JavaScript
+// P-521 Web UI - Premium Frontend Controller
+// Keeps the original backend API contract while upgrading UX, rendering safety, and UI state handling.
 
-const socket = io();
+const socket = typeof io === 'function' ? io() : null;
+
 let currentRoomId = null;
 let currentUserId = null;
-let currentTheme = localStorage.getItem('theme') || 'light';
-let savedRooms = JSON.parse(localStorage.getItem('savedRooms') || '[]');
-let messageHistory = [];
+let currentTheme = localStorage.getItem('theme') || 'dark';
+let savedRooms = safeJSON(localStorage.getItem('savedRooms'), []);
+let messageHistory = safeJSON(localStorage.getItem('messageHistory'), []);
+let activityLog = safeJSON(localStorage.getItem('activityLog'), []);
 let selfDestructEnabled = false;
 let selfDestructTime = 30;
 let sessionStartTime = Date.now();
-let messagesSent = 0;
-let activityLog = JSON.parse(localStorage.getItem('activityLog') || '[]');
+let messagesSent = Number(localStorage.getItem('messagesSent') || '0');
 let soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
 let replyingTo = null;
+let createdRoomData = null;
+let typingTimeout = null;
 
-// Initialize
-document.addEventListener('DOMContentLoaded', function() {
-    checkAutoLogin();
-    setupSocketListeners();
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+const byId = (id) => document.getElementById(id);
+
+const UI = {
+    tabs: ['dashboard', 'join', 'host', 'rooms', 'trust', 'settings', 'help'],
+    emojiSet: ['😀', '😂', '😍', '👍', '🎉', '🔥', '❤️', '👋', '🤔', '😎', '🙏', '💯', '⚡', '🛡️', '👁️', '🌙', '✨', '🚀'],
+    reactionSet: ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '💯', '🛡️', '⚡'],
+    emptyRooms: `<div class="empty-state"><i class="bi bi-chat-dots"></i><p>No rooms yet. Join a room to get started.</p></div>`,
+    emptyContacts: `<div class="empty-state"><i class="bi bi-person-check"></i><p>No trusted contacts yet.</p></div>`,
+    welcomeMessage: `<div class="message system">Welcome to the secure E2E room. Messages are end-to-end encrypted.</div>` 
+};
+
+document.addEventListener('DOMContentLoaded', initApp);
+
+function initApp() {
     applyTheme();
+    setupSocketListeners();
     setupKeyboardShortcuts();
     setupDragAndDrop();
+    setupRoomSearch();
+    setupSelfDestructControl();
     updateDashboardStats();
-    setInterval(updateDashboardStats, 60000); // Update every minute
     loadActivityLog();
-    loadMessageHistory();
-});
+    setInterval(updateDashboardStats, 60_000);
+    checkAutoLogin();
+}
 
 async function checkAutoLogin() {
     try {
         const response = await fetch('/api/auto-login');
-        const data = await response.json();
-        
-        if (data.success && data.auto_logged_in) {
-            // Auto-login successful
-            sessionStorage.setItem('password', AUTO_PASSWORD);
-            
-            document.getElementById('loginScreen').classList.add('hidden');
-            document.getElementById('mainApp').classList.remove('hidden');
-            document.getElementById('currentUser').textContent = data.display_name;
-            document.getElementById('settingsDisplayName').value = data.display_name;
-            document.getElementById('identityFingerprint').textContent = data.fingerprint;
-            document.getElementById('yourFingerprint').textContent = data.fingerprint.substring(0, 16) + '...';
-            
-            showToast('Auto-logged in from CLI!', 'success');
-            
-            // Auto-join room if invite link provided
+        const data = await safeResponseJSON(response);
+
+        if (data?.success && data.auto_logged_in) {
+            if (typeof AUTO_PASSWORD !== 'undefined') {
+                sessionStorage.setItem('password', AUTO_PASSWORD);
+            }
+
+            enterApp(data.display_name, data.fingerprint);
+            showToast('Auto-logged in from CLI.', 'success');
+
             if (data.invite_link) {
-                document.getElementById('inviteLink').value = data.invite_link;
+                byId('inviteLink').value = data.invite_link;
                 await joinRoom();
             }
-            
+
             return;
         }
-    } catch (error) {
-        // Auto-login not available, proceed normally
+    } catch (_) {
+        // Auto-login is optional.
     }
-    
-    // Fall back to normal identity check
+
     checkIdentityStatus();
 }
 
-// Socket.io listeners
 function setupSocketListeners() {
-    socket.on('connect', () => {
-        console.log('Connected to server');
-    });
+    if (!socket) {
+        console.warn('Socket.io is not available. Realtime updates disabled.');
+        return;
+    }
 
-    socket.on('joined', (data) => {
-        console.log('Joined room:', data.room_id);
-    });
-
-    socket.on('message', (data) => {
-        displayMessage(data);
-    });
+    socket.on('connect', () => setConnectionState(true));
+    socket.on('disconnect', () => setConnectionState(false));
+    socket.on('joined', (data) => console.log('Joined room:', data.room_id));
+    socket.on('message', (data) => displayMessage(data));
 }
 
-// Identity Management
+function setConnectionState(isOnline) {
+    const status = byId('connectionStatus');
+    if (!status) return;
+
+    status.classList.toggle('status-online', isOnline);
+    status.classList.toggle('status-offline', !isOnline);
+}
+
 async function checkIdentityStatus() {
     try {
         const response = await fetch('/api/identity/status');
-        const data = await response.json();
-        
-        if (data.exists) {
-            showLoginForm();
-        } else {
-            showNewIdentityForm();
-        }
+        const data = await safeResponseJSON(response);
+
+        data?.exists ? showLoginForm() : showNewIdentityForm();
     } catch (error) {
-        showToast('Error checking identity status', 'danger');
+        showToast('Error checking identity status.', 'danger');
     }
 }
 
 function showNewIdentityForm() {
-    document.getElementById('newIdentityForm').classList.remove('hidden');
-    document.getElementById('loginForm').classList.add('hidden');
+    byId('newIdentityForm')?.classList.remove('hidden');
+    byId('loginForm')?.classList.add('hidden');
 }
 
 function showLoginForm() {
-    document.getElementById('newIdentityForm').classList.add('hidden');
-    document.getElementById('loginForm').classList.remove('hidden');
+    byId('newIdentityForm')?.classList.add('hidden');
+    byId('loginForm')?.classList.remove('hidden');
+    byId('loginPassword')?.focus();
 }
 
 async function createIdentity() {
-    const displayName = document.getElementById('displayName').value;
-    const password = document.getElementById('newPassword').value;
-    const confirmPassword = document.getElementById('confirmPassword').value;
+    const displayName = byId('displayName')?.value.trim();
+    const password = byId('newPassword')?.value || '';
+    const confirmPassword = byId('confirmPassword')?.value || '';
 
-    if (!displayName || !password) {
-        showToast('Please fill in all fields', 'warning');
-        return;
-    }
-
-    if (password !== confirmPassword) {
-        showToast('Passwords do not match', 'warning');
-        return;
-    }
-
-    if (password.length < 8) {
-        showToast('Password must be at least 8 characters', 'warning');
-        return;
-    }
+    if (!displayName || !password) return showToast('Please fill in all fields.', 'warning');
+    if (password !== confirmPassword) return showToast('Passwords do not match.', 'warning');
+    if (password.length < 8) return showToast('Password must be at least 8 characters.', 'warning');
 
     try {
         const response = await fetch('/api/identity/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password, display_name: displayName })
+            body: JSON.stringify({
+                password,
+                display_name: displayName
+            })
         });
 
-        const data = await response.json();
+        const data = await safeResponseJSON(response);
 
-        if (data.success) {
-            showToast('Identity created successfully!', 'success');
-            // Auto-login after creation
+        if (data?.success) {
+            showToast('Identity created successfully.', 'success');
             await loginWithPassword(password);
         } else {
-            showToast(data.error || 'Failed to create identity', 'danger');
+            showToast(data?.error || 'Failed to create identity.', 'danger');
         }
     } catch (error) {
-        showToast('Error creating identity', 'danger');
+        showToast('Error creating identity.', 'danger');
     }
 }
 
-async function login() {
-    const password = document.getElementById('loginPassword').value;
-    await loginWithPassword(password);
+function login() {
+    loginWithPassword(byId('loginPassword')?.value || '');
 }
 
 async function loginWithPassword(password) {
+    if (!password) return showToast('Enter your password.', 'warning');
+
     try {
         const response = await fetch('/api/identity/load', {
             method: 'POST',
@@ -156,88 +161,70 @@ async function loginWithPassword(password) {
             body: JSON.stringify({ password })
         });
 
-        const data = await response.json();
+        const data = await safeResponseJSON(response);
 
-        if (data.success) {
-            // Store password in session for crypto operations
+        if (data?.success) {
             sessionStorage.setItem('password', password);
-            
-            document.getElementById('loginScreen').classList.add('hidden');
-            document.getElementById('mainApp').classList.remove('hidden');
-            document.getElementById('currentUser').textContent = data.display_name;
-            document.getElementById('settingsDisplayName').value = data.display_name;
-            document.getElementById('identityFingerprint').textContent = data.fingerprint;
-            document.getElementById('yourFingerprint').textContent = data.fingerprint.substring(0, 16) + '...';
-            showToast('Logged in successfully!', 'success');
+            enterApp(data.display_name, data.fingerprint);
+            showToast('Logged in successfully.', 'success');
         } else {
-            showToast(data.error || 'Login failed', 'danger');
+            showToast(data?.error || 'Login failed.', 'danger');
         }
     } catch (error) {
-        showToast('Error logging in', 'danger');
+        showToast('Error logging in.', 'danger');
     }
+}
+
+function enterApp(displayName = 'User', fingerprint = '') {
+    byId('loginScreen')?.classList.add('hidden');
+    byId('mainApp')?.classList.remove('hidden');
+
+    setText('currentUser', displayName);
+    setValue('settingsDisplayName', displayName);
+    setText('identityFingerprint', fingerprint);
+    setText('trustFingerprint', fingerprint);
+    setText('yourFingerprint', fingerprint ? `${fingerprint.substring(0, 18)}...` : 'fingerprint unavailable');
+
+    renderParticipantSelf(displayName, fingerprint);
+    showTab('dashboard');
 }
 
 function logout() {
-    if (currentRoomId) {
-        leaveRoom();
-    }
-    document.getElementById('mainApp').classList.add('hidden');
-    document.getElementById('loginScreen').classList.remove('hidden');
-    document.getElementById('loginPassword').value = '';
-    showToast('Logged out', 'info');
+    if (currentRoomId) leaveRoom();
+
+    sessionStorage.removeItem('password');
+
+    byId('mainApp')?.classList.add('hidden');
+    byId('loginScreen')?.classList.remove('hidden');
+
+    setValue('loginPassword', '');
+
+    showToast('Logged out.', 'info');
 }
 
-// Tab Navigation
-function showTab(tabName) {
-    // Hide all tabs
-    document.getElementById('dashboardTab').classList.add('hidden');
-    document.getElementById('joinTab').classList.add('hidden');
-    document.getElementById('hostTab').classList.add('hidden');
-    document.getElementById('roomsTab').classList.add('hidden');
-    document.getElementById('trustTab').classList.add('hidden');
-    document.getElementById('settingsTab').classList.add('hidden');
-    document.getElementById('helpTab').classList.add('hidden');
-    document.getElementById('chatRoom').classList.add('hidden');
+function showTab(tabName, event) {
+    if (!UI.tabs.includes(tabName)) return;
 
-    // Remove active class from all nav links
-    document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
+    UI.tabs.forEach(tab => byId(`${tabName}Tab`)?.classList.add('hidden'));
+    byId('chatRoom')?.classList.add('hidden');
 
-    // Show selected tab
-    document.getElementById(tabName + 'Tab').classList.remove('hidden');
+    byId(`${tabName}Tab`)?.classList.remove('hidden');
 
-    // Add active class to clicked link
-    event.target.classList.add('active');
+    $$('#mainTabs .nav-link').forEach(link => link.classList.remove('active'));
 
-    // Load room list if showing rooms tab
-    if (tabName === 'rooms') {
-        loadRoomList();
-    }
+    const activeLink = event?.currentTarget || $(`#mainTabs .nav-link[data-tab="${tabName}"]`);
+    activeLink?.classList.add('active');
 
-    // Load trust info if showing trust tab
-    if (tabName === 'trust') {
-        loadTrustInfo();
-    }
-
-    // Update dashboard if showing dashboard tab
-    if (tabName === 'dashboard') {
-        updateDashboardStats();
-    }
-
-    // Update settings toggles if showing settings tab
-    if (tabName === 'settings') {
-        document.getElementById('soundToggle').checked = soundEnabled;
-        document.getElementById('themeToggle').checked = currentTheme === 'dark';
-    }
+    if (tabName === 'rooms') loadRoomList();
+    if (tabName === 'trust') loadTrustInfo();
+    if (tabName === 'dashboard') updateDashboardStats();
+    if (tabName === 'settings') syncSettingsControls();
 }
 
-// Room Management
 async function joinRoom() {
-    const inviteLink = document.getElementById('inviteLink').value;
+    const inviteLink = byId('inviteLink')?.value.trim();
 
-    if (!inviteLink) {
-        showToast('Please enter an invite link', 'warning');
-        return;
-    }
+    if (!inviteLink) return showToast('Please enter an invite link.', 'warning');
 
     try {
         const response = await fetch('/api/room/join', {
@@ -246,228 +233,278 @@ async function joinRoom() {
             body: JSON.stringify({ invite_link: inviteLink })
         });
 
-        const data = await response.json();
+        const data = await safeResponseJSON(response);
 
-        if (data.success) {
+        if (data?.success) {
             currentRoomId = data.room_id;
-            document.getElementById('roomTitle').textContent = `Room: ${data.room_id_display}`;
-            document.getElementById('joinTab').classList.add('hidden');
-            document.getElementById('chatRoom').classList.remove('hidden');
-            
-            // Save room to local storage
+
+            setText('roomTitle', `Room: ${data.room_id_display}`);
+
+            hideAllMainSections();
+            byId('chatRoom')?.classList.remove('hidden');
+
             saveRoom(data.room_id_display, inviteLink);
-            
-            // Join socket room
-            socket.emit('join_room', { room_id: currentRoomId });
-            
-            // Log activity
+
+            socket?.emit('join_room', { room_id: currentRoomId });
+
             addActivity('join', `Joined room ${data.room_id_display}`);
-            
-            showToast('Joined room successfully!', 'success');
+            showToast('Joined room successfully.', 'success');
         } else {
-            showToast(data.error || 'Failed to join room', 'danger');
+            showToast(data?.error || 'Failed to join room.', 'danger');
         }
     } catch (error) {
-        showToast('Error joining room', 'danger');
+        showToast('Error joining room.', 'danger');
     }
+}
+
+function hideAllMainSections() {
+    UI.tabs.forEach(tab => byId(`${tabName}Tab`)?.classList.add('hidden'));
+    $$('#mainTabs .nav-link').forEach(link => link.classList.remove('active'));
 }
 
 function saveRoom(roomId, inviteLink) {
-    const existingIndex = savedRooms.findIndex(r => r.id === roomId);
-    if (existingIndex === -1) {
-        savedRooms.push({
-            id: roomId,
-            inviteLink: inviteLink,
-            joinedAt: new Date().toISOString()
-        });
-        localStorage.setItem('savedRooms', JSON.stringify(savedRooms));
-    }
+    if (!roomId || savedRooms.some(room => room.id === roomId)) return;
+
+    savedRooms.unshift({
+        id: roomId,
+        inviteLink,
+        joinedAt: new Date().toISOString()
+    });
+
+    savedRooms = savedRooms.slice(0, 50);
+
+    localStorage.setItem('savedRooms', JSON.stringify(savedRooms));
 }
 
-function loadRoomList() {
-    const roomList = document.getElementById('roomList');
-    if (savedRooms.length === 0) {
-        roomList.innerHTML = `
-            <div class="text-center text-muted py-5">
-                <i class="bi bi-chat-dots feature-icon"></i>
-                <p>No rooms yet. Join a room to get started!</p>
-            </div>
-        `;
+function loadRoomList(filter = '') {
+    const roomList = byId('roomList');
+    if (!roomList) return;
+
+    const normalized = filter.trim().toLowerCase();
+    const rooms = savedRooms.filter(room => !normalized || room.id.toLowerCase().includes(normalized));
+
+    if (!rooms.length) {
+        roomList.innerHTML = UI.emptyRooms;
         return;
     }
 
-    roomList.innerHTML = savedRooms.map(room => {
-        const joinedDate = new Date(room.joinedAt);
-        const timeAgo = getTimeAgo(joinedDate);
-        
-        return `
-            <div class="room-item" onclick="rejoinRoom('${room.id}')">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                        <div class="fw-bold mb-1">
-                            <i class="bi bi-door-open me-2"></i>${room.id}
-                        </div>
-                        <small class="text-muted">
-                            <i class="bi bi-clock me-1"></i>Joined ${timeAgo}
-                        </small>
-                    </div>
-                    <div class="dropdown">
-                        <button class="btn btn-sm btn-link text-muted" data-bs-toggle="dropdown">
-                            <i class="bi bi-three-dots-vertical"></i>
-                        </button>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="#" onclick="event.stopPropagation(); copyRoomLink('${room.inviteLink}')">
-                                <i class="bi bi-clipboard me-2"></i>Copy Link
-                            </a></li>
-                            <li><a class="dropdown-item text-danger" href="#" onclick="event.stopPropagation(); deleteRoom('${room.id}')">
-                                <i class="bi bi-trash me-2"></i>Delete
-                            </a></li>
-                        </ul>
-                    </div>
+    roomList.replaceChildren(...rooms.map(room => createRoomNode(room)));
+}
+
+function createRoomNode(room) {
+    const item = document.createElement('div');
+    item.className = `room-item${currentRoomId && room.id === currentRoomId ? ' active' : ''}`;
+    item.addEventListener('click', () => rejoinRoom(room.id));
+
+    const joinedDate = new Date(room.joinedAt);
+
+    item.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start gap-3">
+            <div class="min-w-0">
+                <div class="fw-bold mb-1">
+                    <i class="bi bi-door-open me-2 text-info"></i>
+                    <span class="room-title"></span>
                 </div>
+                <small class="text-muted">
+                    <i class="bi bi-clock me-1"></i>
+                    Joined ${escapeHtml(getTimeAgo(joinedDate))}
+                </small>
             </div>
-        `;
-    }).join('');
+
+            <div class="dropdown">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" aria-label="Room actions">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li>
+                        <button class="dropdown-item" type="button" data-action="copy">
+                            <i class="bi bi-clipboard me-2"></i>Copy Link
+                        </button>
+                    </li>
+
+                    <li>
+                        <button class="dropdown-item text-danger" type="button" data-action="delete">
+                            <i class="bi bi-trash me-2"></i>Delete
+                        </button>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    `;
+
+    $('.room-title', item).textContent = room.id;
+
+    $('[data-action="copy"]', item).addEventListener('click', (event) => {
+        event.stopPropagation();
+        copyRoomLink(room.inviteLink);
+    });
+
+    $('[data-action="delete"]', item).addEventListener('click', (event) => {
+        event.stopPropagation();
+        deleteRoom(room.id);
+    });
+
+    return item;
+}
+
+function setupRoomSearch() {
+    byId('roomSearch')?.addEventListener('input', event => loadRoomList(event.target.value));
 }
 
 function getTimeAgo(date) {
-    const seconds = Math.floor((new Date() - date) / 1000);
+    const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+
     if (seconds < 60) return 'just now';
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
     if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+
     return date.toLocaleDateString();
 }
 
-function copyRoomLink(inviteLink) {
-    navigator.clipboard.writeText(inviteLink).then(() => {
-        showToast('Room link copied!', 'success');
-    }).catch(() => {
-        showToast('Failed to copy link', 'danger');
-    });
+async function copyRoomLink(inviteLink) {
+    try {
+        await navigator.clipboard.writeText(inviteLink);
+        showToast('Room link copied.', 'success');
+    } catch (_) {
+        showToast('Failed to copy link.', 'danger');
+    }
 }
 
 function deleteRoom(roomId) {
-    if (confirm('Are you sure you want to delete this room from your list?')) {
-        savedRooms = savedRooms.filter(r => r.id !== roomId);
-        localStorage.setItem('savedRooms', JSON.stringify(savedRooms));
-        loadRoomList();
-        showToast('Room deleted', 'info');
-    }
+    if (!confirm('Delete this room from your saved list?')) return;
+
+    savedRooms = savedRooms.filter(room => room.id !== roomId);
+
+    localStorage.setItem('savedRooms', JSON.stringify(savedRooms));
+
+    loadRoomList(byId('roomSearch')?.value || '');
+    showToast('Room deleted.', 'info');
 }
 
 async function rejoinRoom(roomId) {
-    const room = savedRooms.find(r => r.id === roomId);
-    if (room) {
-        document.getElementById('inviteLink').value = room.inviteLink;
-        await joinRoom();
-    }
+    const room = savedRooms.find(item => item.id === roomId);
+    if (!room) return;
+
+    setValue('inviteLink', room.inviteLink);
+    await joinRoom();
 }
 
 function loadTrustInfo() {
-    const fingerprint = document.getElementById('identityFingerprint')?.textContent || '';
-    document.getElementById('trustFingerprint').textContent = fingerprint;
+    setText('trustFingerprint', byId('identityFingerprint')?.textContent || '');
     loadTrustedContacts();
 }
 
 async function loadTrustedContacts() {
     try {
         const response = await fetch('/api/trust/contacts');
-        const data = await response.json();
-        
-        const contactsDiv = document.getElementById('trustedContacts');
-        
-        if (data.success && data.contacts.length > 0) {
-            contactsDiv.innerHTML = data.contacts.map(contact => `
-                <div class="participant-item">
-                    <div class="participant-avatar">${contact.name.charAt(0).toUpperCase()}</div>
-                    <div>
-                        <div class="fw-bold">${contact.name}</div>
-                        <small class="text-muted">${contact.fingerprint.substring(0, 16)}...</small>
-                    </div>
-                </div>
-            `).join('');
+        const data = await safeResponseJSON(response);
+        const contactsDiv = byId('trustedContacts');
+
+        if (!contactsDiv) return;
+
+        if (data?.success && Array.isArray(data.contacts) && data.contacts.length > 0) {
+            contactsDiv.replaceChildren(...data.contacts.map(createContactNode));
         } else {
-            contactsDiv.innerHTML = `
-                <div class="text-center text-muted py-5">
-                    <i class="bi bi-person-check feature-icon"></i>
-                    <p>No trusted contacts yet.</p>
-                </div>
-            `;
+            contactsDiv.innerHTML = UI.emptyContacts;
         }
     } catch (error) {
         console.error('Error loading trusted contacts:', error);
     }
 }
 
+function createContactNode(contact) {
+    const node = document.createElement('div');
+    node.className = 'participant-item';
+
+    const name = contact.name || 'Unknown';
+    const fingerprint = contact.fingerprint || '';
+
+    node.innerHTML = `
+        <div class="participant-avatar"></div>
+        <div class="min-w-0">
+            <div class="fw-bold contact-name"></div>
+            <small class="text-muted contact-fp"></small>
+        </div>
+    `;
+
+    $('.participant-avatar', node).textContent = name.charAt(0).toUpperCase();
+    $('.contact-name', node).textContent = name;
+    $('.contact-fp', node).textContent = fingerprint ? `${fingerprint.substring(0, 18)}...` : 'fingerprint unavailable';
+
+    return node;
+}
+
 async function exportIdentity() {
     try {
         const response = await fetch('/api/identity/export');
-        const data = await response.json();
-        
-        if (data.success) {
-            const blob = new Blob([JSON.stringify(data.data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `p521_identity_${data.data.fingerprint.substring(0, 8)}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            showToast('Identity exported successfully!', 'success');
-        } else {
-            showToast(data.error || 'Failed to export identity', 'danger');
-        }
+        const data = await safeResponseJSON(response);
+
+        if (!data?.success) return showToast(data?.error || 'Failed to export identity.', 'danger');
+
+        const blob = new Blob([JSON.stringify(data.data, null, 2)], {
+            type: 'application/json'
+        });
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const shortFp = data.data?.fingerprint ? data.data.fingerprint.substring(0, 8) : 'backup';
+
+        link.href = url;
+        link.download = `p521_identity_${shortFp}.json`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        URL.revokeObjectURL(url);
+
+        showToast('Identity exported successfully.', 'success');
     } catch (error) {
-        showToast('Error exporting identity', 'danger');
+        showToast('Error exporting identity.', 'danger');
     }
 }
 
 async function importIdentity() {
     const input = document.createElement('input');
+
     input.type = 'file';
-    input.accept = '.json';
-    
-    input.onchange = async (e) => {
-        const file = e.target.files[0];
+    input.accept = '.json,application/json';
+
+    input.onchange = async (event) => {
+        const file = event.target.files?.[0];
         if (!file) return;
-        
+
         try {
-            const content = await file.text();
-            const identityData = JSON.parse(content);
-            
+            const identityData = JSON.parse(await file.text());
+
             const response = await fetch('/api/identity/import', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ data: identityData })
             });
-            
-            const data = await response.json();
-            
-            if (data.success) {
-                showToast('Identity imported successfully!', 'success');
+
+            const data = await safeResponseJSON(response);
+
+            if (data?.success) {
+                showToast('Identity imported successfully.', 'success');
                 loadTrustInfo();
             } else {
-                showToast(data.error || 'Failed to import identity', 'danger');
+                showToast(data?.error || 'Failed to import identity.', 'danger');
             }
         } catch (error) {
-            showToast('Error importing identity', 'danger');
+            showToast('Error importing identity.', 'danger');
         }
     };
-    
+
     input.click();
 }
 
-let createdRoomData = null;
-
 async function createRoom() {
-    const relayUrl = document.getElementById('relayUrl').value;
+    const relayUrl = byId('relayUrl')?.value.trim();
 
-    if (!relayUrl) {
-        showToast('Please enter a relay URL', 'warning');
-        return;
-    }
+    if (!relayUrl) return showToast('Please enter a relay URL.', 'warning');
 
     try {
         const response = await fetch('/api/room/create', {
@@ -476,739 +513,901 @@ async function createRoom() {
             body: JSON.stringify({ relay_url: relayUrl })
         });
 
-        const data = await response.json();
+        const data = await safeResponseJSON(response);
 
-        if (data.success) {
+        if (data?.success) {
             createdRoomData = data;
-            
-            // Display invite link section
-            document.getElementById('inviteLinkSection').classList.remove('hidden');
-            document.getElementById('inviteLinkDisplay').value = data.invite_link;
-            document.getElementById('roomIdDisplay').textContent = data.room_id_display;
-            document.getElementById('roomKeyDisplay').textContent = data.room_key;
-            
-            // Generate QR code
+
+            byId('inviteLinkSection')?.classList.remove('hidden');
+
+            setValue('inviteLinkDisplay', data.invite_link);
+            setText('roomIdDisplay', data.room_id_display);
+            setText('roomKeyDisplay', data.room_key);
+
             generateQRCode(data.invite_link);
-            
-            // Log activity
             addActivity('create', `Created room ${data.room_id_display}`);
-            
-            showToast('Room created successfully!', 'success');
+
+            showToast('Room created successfully.', 'success');
         } else {
-            showToast(data.error || 'Failed to create room', 'danger');
+            showToast(data?.error || 'Failed to create room.', 'danger');
         }
     } catch (error) {
-        showToast('Error creating room', 'danger');
+        showToast('Error creating room.', 'danger');
     }
 }
 
-function copyInviteLink() {
-    const inviteLink = document.getElementById('inviteLinkDisplay').value;
-    if (inviteLink) {
-        navigator.clipboard.writeText(inviteLink).then(() => {
-            showToast('Invite link copied to clipboard!', 'success');
-        }).catch(() => {
-            showToast('Failed to copy invite link', 'danger');
-        });
+async function copyInviteLink() {
+    const inviteLink = byId('inviteLinkDisplay')?.value;
+    if (!inviteLink) return;
+
+    try {
+        await navigator.clipboard.writeText(inviteLink);
+        showToast('Invite link copied.', 'success');
+    } catch (_) {
+        showToast('Failed to copy invite link.', 'danger');
     }
 }
 
 async function joinCreatedRoom() {
-    if (createdRoomData && createdRoomData.invite_link) {
-        document.getElementById('inviteLink').value = createdRoomData.invite_link;
-        await joinRoom();
-    }
+    if (!createdRoomData?.invite_link) return;
+
+    setValue('inviteLink', createdRoomData.invite_link);
+    await joinRoom();
 }
 
 function generateQRCode(text) {
-    const canvas = document.getElementById('qrCodeCanvas');
-    if (canvas && typeof QRCode !== 'undefined') {
-        QRCode.toCanvas(canvas, text, {
-            width: 180,
-            margin: 2,
-            color: {
-                dark: '#000000',
-                light: '#ffffff'
-            }
-        }, function(error) {
-            if (error) console.error(error);
-        });
-    }
+    const canvas = byId('qrCodeCanvas');
+
+    if (!canvas || typeof QRCode === 'undefined') return;
+
+    QRCode.toCanvas(canvas, text, {
+        width: 190,
+        margin: 2,
+        color: {
+            dark: '#06101a',
+            light: '#ffffff'
+        }
+    }, (error) => error && console.error(error));
 }
 
 function downloadQRCode() {
-    const canvas = document.getElementById('qrCodeCanvas');
-    if (canvas) {
-        const link = document.createElement('a');
-        link.download = 'p521-invite-qr.png';
-        link.href = canvas.toDataURL();
-        link.click();
-        showToast('QR code downloaded!', 'success');
-    }
+    const canvas = byId('qrCodeCanvas');
+    if (!canvas) return;
+
+    const link = document.createElement('a');
+
+    link.download = 'p521-invite-qr.png';
+    link.href = canvas.toDataURL('image/png');
+
+    link.click();
+
+    showToast('QR code downloaded.', 'success');
 }
 
-// Dashboard Functions
 function updateDashboardStats() {
-    document.getElementById('statRooms').textContent = savedRooms.length;
-    document.getElementById('statMessages').textContent = messagesSent;
-    
-    // Calculate session time
+    setText('statRooms', savedRooms.length);
+    setText('statMessages', messagesSent);
+
     const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
     const minutes = Math.floor(elapsed / 60);
     const hours = Math.floor(minutes / 60);
-    const displayTime = hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
-    document.getElementById('statUptime').textContent = displayTime;
-    
-    // Load trusted contacts count
+
+    setText('statUptime', hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`);
+
     loadTrustedContactsCount();
 }
 
 async function loadTrustedContactsCount() {
     try {
         const response = await fetch('/api/trust/contacts');
-        const data = await response.json();
-        if (data.success) {
-            document.getElementById('statContacts').textContent = data.contacts.length;
-        }
-    } catch (error) {
-        console.error('Error loading contacts count:', error);
+        const data = await safeResponseJSON(response);
+
+        if (data?.success) setText('statContacts', data.contacts?.length || 0);
+    } catch (_) {
+        // Optional dashboard telemetry.
     }
 }
 
 function addActivity(type, message) {
-    const activity = {
+    activityLog.unshift({
         type,
         message,
         timestamp: new Date().toISOString()
-    };
-    activityLog.unshift(activity);
-    if (activityLog.length > 20) {
-        activityLog.pop();
-    }
+    });
+
+    activityLog = activityLog.slice(0, 20);
+
     localStorage.setItem('activityLog', JSON.stringify(activityLog));
+
     loadActivityLog();
 }
 
 function loadActivityLog() {
-    const container = document.getElementById('recentActivity');
+    const container = byId('recentActivity');
     if (!container) return;
-    
-    if (activityLog.length === 0) {
-        container.innerHTML = '<p class="text-muted">No recent activity</p>';
+
+    if (!activityLog.length) {
+        container.innerHTML = '<p class="text-muted mb-0">No recent activity</p>';
         return;
     }
-    
-    container.innerHTML = activityLog.slice(0, 5).map(activity => {
-        const iconClass = activity.type === 'join' ? 'join' : 
-                         activity.type === 'message' ? 'message' : 'create';
-        const icon = activity.type === 'join' ? 'bi-door-open' : 
-                    activity.type === 'message' ? 'bi-envelope' : 'bi-plus-circle';
-        const time = new Date(activity.timestamp).toLocaleTimeString();
-        
-        return `
-            <div class="activity-item">
-                <div class="activity-icon ${iconClass}">
-                    <i class="bi ${icon}"></i>
-                </div>
-                <div class="flex-grow-1">
-                    <div>${activity.message}</div>
-                    <small class="text-muted">${time}</small>
-                </div>
+
+    container.replaceChildren(...activityLog.slice(0, 5).map(activity => {
+        const map = {
+            join: ['join', 'bi-door-open'],
+            message: ['message', 'bi-envelope-paper'],
+            create: ['create', 'bi-plus-circle']
+        };
+
+        const [iconClass, icon] = map[activity.type] || ['message', 'bi-activity'];
+
+        const node = document.createElement('div');
+        node.className = 'activity-item';
+
+        node.innerHTML = `
+            <div class="activity-icon ${iconClass}">
+                <i class="bi ${icon}"></i>
+            </div>
+
+            <div class="flex-grow-1 min-w-0">
+                <div class="activity-message"></div>
+                <small class="text-muted">${escapeHtml(new Date(activity.timestamp).toLocaleString())}</small>
             </div>
         `;
-    }).join('');
+
+        $('.activity-message', node).textContent = activity.message;
+
+        return node;
+    }));
 }
 
 async function leaveRoom() {
-    if (currentRoomId) {
-        try {
-            await fetch(`/api/room/${currentRoomId}/leave`, { method: 'POST' });
-            currentRoomId = null;
-            document.getElementById('chatRoom').classList.add('hidden');
-            document.getElementById('joinTab').classList.remove('hidden');
-            document.getElementById('chatMessages').innerHTML = `
-                <div class="message system">
-                    Welcome to the secure E2E room. Messages are end-to-end encrypted.
-                </div>
-            `;
-            showToast('Left room', 'info');
-        } catch (error) {
-            showToast('Error leaving room', 'danger');
-        }
-    }
-}
-
-// Chat Functions
-async function sendMessage() {
-    const messageInput = document.getElementById('messageInput');
-    const message = messageInput.value.trim();
-
-    if (!message || !currentRoomId) {
-        return;
-    }
+    if (!currentRoomId) return;
 
     try {
-        const response = await fetch(`/api/room/${currentRoomId}/message`, {
+        await fetch(`/api/room/${encodeURIComponent(currentRoomId)}/leave`, {
+            method: 'POST'
+        });
+    } catch (_) {
+        // Still leave locally even if the relay call fails.
+    }
+
+    currentRoomId = null;
+
+    byId('chatRoom')?.classList.add('hidden');
+    byId('joinTab')?.classList.remove('hidden');
+
+    $(`#mainTabs .nav-link[data-tab="join"]`)?.classList.add('active');
+
+    if (byId('chatMessages')) byId('chatMessages').innerHTML = UI.welcomeMessage;
+
+    showToast('Left room.', 'info');
+}
+
+async function sendMessage() {
+    const messageInput = byId('messageInput');
+    const message = messageInput?.value.trim();
+
+    if (!message || !currentRoomId) return;
+
+    const payload = { message };
+
+    if (replyingTo) payload.reply_to = replyingTo.id;
+    if (selfDestructEnabled) payload.self_destruct = selfDestructTime;
+
+    try {
+        const response = await fetch(`/api/room/${encodeURIComponent(currentRoomId)}/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message })
+            body: JSON.stringify(payload)
         });
 
-        const data = await response.json();
+        const data = await safeResponseJSON(response);
 
-        if (data.success) {
+        if (data?.success) {
             messageInput.value = '';
+
+            resetReplyMode();
+
             messagesSent++;
-            
-            // Log activity
+
+            localStorage.setItem('messagesSent', String(messagesSent));
+
             addActivity('message', 'Sent a message');
-            
-            // Reset self-destruct
-            if (selfDestructEnabled) {
-                selfDestructEnabled = false;
-                document.getElementById('selfDestructOptions').classList.add('hidden');
-            }
+            updateDashboardStats();
+
+            if (selfDestructEnabled) toggleSelfDestruct(false);
         } else {
-            showToast(data.error || 'Failed to send message', 'danger');
+            showToast(data?.error || 'Failed to send message.', 'danger');
         }
     } catch (error) {
-        showToast('Error sending message', 'danger');
+        showToast('Error sending message.', 'danger');
     }
 }
 
-function toggleSelfDestruct() {
-    selfDestructEnabled = !selfDestructEnabled;
-    const options = document.getElementById('selfDestructOptions');
-    
-    if (selfDestructEnabled) {
-        options.classList.remove('hidden');
-        selfDestructTime = parseInt(document.getElementById('destructTime').value);
-    } else {
-        options.classList.add('hidden');
-    }
+function setupSelfDestructControl() {
+    byId('destructTime')?.addEventListener('change', function () {
+        selfDestructTime = Number(this.value || 30);
+    });
 }
 
-document.getElementById('destructTime')?.addEventListener('change', function() {
-    selfDestructTime = parseInt(this.value);
-});
+function toggleSelfDestruct(forceState) {
+    selfDestructEnabled = typeof forceState === 'boolean' ? forceState : !selfDestructEnabled;
 
-function displayMessage(data) {
-    const chatMessages = document.getElementById('chatMessages');
+    byId('selfDestructOptions')?.classList.toggle('hidden', !selfDestructEnabled);
+
+    selfDestructTime = Number(byId('destructTime')?.value || 30);
+
+    showToast(selfDestructEnabled ? 'Self-destruct enabled for next message.' : 'Self-destruct disabled.', 'info');
+}
+
+function displayMessage(data = {}) {
+    const chatMessages = byId('chatMessages');
+    if (!chatMessages) return;
+
+    const message = normalizeMessage(data);
+
     const messageDiv = document.createElement('div');
-    
-    messageDiv.className = `message ${data.type}`;
-    messageDiv.dataset.messageId = data.id || Date.now();
-    
-    const timestamp = new Date(data.timestamp).toLocaleTimeString();
-    
-    if (data.type === 'system') {
-        messageDiv.innerHTML = `
-            <div>${data.content}</div>
-        `;
+    messageDiv.className = `message ${message.type}`;
+    messageDiv.dataset.messageId = message.id;
+
+    if (message.type === 'system') {
+        messageDiv.textContent = message.content;
     } else {
-        const processedContent = parseMarkdown(data.content);
-        let timerHtml = '';
-        let replyHtml = '';
-        
-        if (data.replyTo) {
-            replyHtml = `
-                <div class="message-reply">
-                    <i class="bi bi-reply me-1"></i>
-                    <strong>${data.replyTo.sender}:</strong> ${data.replyTo.content.substring(0, 50)}...
-                </div>
-            `;
-        }
-        
-        if (data.selfDestruct) {
-            timerHtml = `<div class="self-destruct-timer" id="timer-${data.id}">${formatTime(data.selfDestruct)}</div>`;
-            startSelfDestructTimer(data.id, data.selfDestruct);
-        }
-        
-        messageDiv.innerHTML = `
-            ${timerHtml}
-            ${replyHtml}
-            <div class="message-sender">${data.sender}</div>
-            <div class="markdown-content">${processedContent}</div>
-            <div class="message-timestamp">${timestamp}</div>
-            <div class="message-reactions" id="reactions-${data.id}"></div>
-            <div class="d-flex gap-2 mt-2">
-                <button class="btn btn-sm btn-link text-muted p-0" onclick="showEmojiPicker(${data.id})">
-                    <i class="bi bi-emoji-smile"></i>
-                </button>
-                <button class="btn btn-sm btn-link text-muted p-0" onclick="replyToMessage(${data.id})">
-                    <i class="bi bi-reply"></i>
-                </button>
-                <button class="btn btn-sm btn-link text-muted p-0" onclick="quoteMessage(${data.id})">
-                    <i class="bi bi-quote"></i>
-                </button>
-            </div>
-        `;
+        renderChatMessage(messageDiv, message);
     }
-    
+
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
-    
-    // Play sound for received messages
-    if (data.type === 'received' && soundEnabled) {
-        playNotificationSound();
-    }
-    
-    // Save to history
-    messageHistory.push(data);
+
+    if (message.type === 'received' && soundEnabled) playNotificationSound();
+
+    messageHistory.push(message);
+    messageHistory = messageHistory.slice(-500);
+
     localStorage.setItem('messageHistory', JSON.stringify(messageHistory));
+}
+
+function normalizeMessage(data) {
+    return {
+        id: data.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        type: ['sent', 'received', 'system'].includes(data.type) ? data.type : 'received',
+        sender: data.sender || (data.type === 'sent' ? 'You' : 'Unknown'),
+        content: String(data.content ?? data.message ?? ''),
+        timestamp: data.timestamp || new Date().toISOString(),
+        replyTo: data.replyTo || data.reply_to || null,
+        selfDestruct: data.selfDestruct || data.self_destruct || null
+    };
+}
+
+function renderChatMessage(container, message) {
+    if (message.selfDestruct) {
+        const timer = document.createElement('div');
+
+        timer.className = 'self-destruct-timer';
+        timer.id = `timer-${cssEscape(message.id)}`;
+        timer.textContent = formatTime(Number(message.selfDestruct));
+
+        container.appendChild(timer);
+
+        requestAnimationFrame(() => startSelfDestructTimer(message.id, Number(message.selfDestruct)));
+    }
+
+    if (message.replyTo) {
+        const reply = document.createElement('div');
+
+        reply.className = 'message-reply';
+
+        const sender = message.replyTo.sender || 'Unknown';
+        const content = String(message.replyTo.content || '').slice(0, 70);
+
+        reply.textContent = `↳ ${sender}: ${content}${content.length >= 70 ? '...' : ''}`;
+
+        container.appendChild(reply);
+    }
+
+    const sender = document.createElement('div');
+    sender.className = 'message-sender';
+    sender.textContent = message.sender;
+
+    const content = document.createElement('div');
+    content.className = 'markdown-content';
+    content.innerHTML = parseMarkdown(message.content);
+
+    const timestamp = document.createElement('div');
+    timestamp.className = 'message-timestamp';
+    timestamp.textContent = new Date(message.timestamp).toLocaleTimeString();
+
+    const reactions = document.createElement('div');
+    reactions.className = 'message-reactions';
+    reactions.id = `reactions-${message.id}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+
+    actions.innerHTML = `
+        <button class="btn btn-sm btn-link p-0" type="button" data-action="emoji" title="React">
+            <i class="bi bi-emoji-smile"></i>
+        </button>
+
+        <button class="btn btn-sm btn-link p-0" type="button" data-action="reply" title="Reply">
+            <i class="bi bi-reply"></i>
+        </button>
+
+        <button class="btn btn-sm btn-link p-0" type="button" data-action="quote" title="Quote">
+            <i class="bi bi-quote"></i>
+        </button>
+    `;
+
+    $('[data-action="emoji"]', actions).addEventListener('click', () => showEmojiPicker(message.id));
+    $('[data-action="reply"]', actions).addEventListener('click', () => replyToMessage(message.id));
+    $('[data-action="quote"]', actions).addEventListener('click', () => quoteMessage(message.id));
+
+    container.append(sender, content, timestamp, reactions, actions);
 }
 
 function formatTime(seconds) {
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
 function startSelfDestructTimer(messageId, seconds) {
-    let remaining = seconds;
-    const timerElement = document.getElementById(`timer-${messageId}`);
-    
+    let remaining = Math.max(1, seconds);
+
+    const timerElement = byId(`timer-${messageId}`);
+
     const interval = setInterval(() => {
         remaining--;
-        if (timerElement) {
-            timerElement.textContent = formatTime(remaining);
-        }
-        
+
+        if (timerElement) timerElement.textContent = formatTime(remaining);
+
         if (remaining <= 0) {
             clearInterval(interval);
-            const messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
+
+            const messageDiv = document.querySelector(`[data-message-id="${cssEscape(messageId)}"]`);
+
             if (messageDiv) {
                 messageDiv.style.opacity = '0';
-                messageDiv.style.transform = 'scale(0.8)';
-                setTimeout(() => messageDiv.remove(), 300);
+                messageDiv.style.transform = 'scale(.92) translateY(8px)';
+
+                setTimeout(() => messageDiv.remove(), 260);
             }
         }
     }, 1000);
 }
 
 function parseMarkdown(text) {
-    // Simple markdown parsing
     let html = escapeHtml(text);
-    
-    // Code blocks
+
     html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    
-    // Inline code
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    
-    // Bold
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    
-    // Italic
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    
-    // Blockquotes
-    html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
-    
-    // Links
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-    
+    html = html.replace(/(^|\s)\*([^*]+)\*/g, '$1<em>$2</em>');
+    html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    html = html.replace(/\n/g, '<br>');
+
     return html;
 }
 
 function showEmojiPicker(messageId) {
-    const existingPicker = document.querySelector('.emoji-picker');
-    if (existingPicker) {
-        existingPicker.remove();
-        return;
-    }
+    const existing = $('.emoji-picker');
+    if (existing) existing.remove();
 
-    const messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
+    const messageDiv = document.querySelector(`[data-message-id="${cssEscape(messageId)}"]`);
     if (!messageDiv) return;
 
-    const emojis = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '💯'];
-    
     const picker = document.createElement('div');
     picker.className = 'emoji-picker';
-    picker.innerHTML = emojis.map(emoji => 
-        `<span class="emoji-btn" onclick="addReaction(${messageId}, '${emoji}')">${emoji}</span>`
-    ).join('');
-    
+
+    UI.reactionSet.forEach(emoji => {
+        const button = document.createElement('span');
+
+        button.className = 'emoji-btn';
+        button.textContent = emoji;
+
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            addReaction(messageId, emoji);
+        });
+
+        picker.appendChild(button);
+    });
+
     messageDiv.appendChild(picker);
-    
-    // Close picker when clicking outside
+
     setTimeout(() => {
-        document.addEventListener('click', function closePicker(e) {
-            if (!picker.contains(e.target)) {
+        document.addEventListener('click', function closePicker(event) {
+            if (!picker.contains(event.target)) {
                 picker.remove();
                 document.removeEventListener('click', closePicker);
             }
         });
-    }, 100);
+    }, 0);
 }
 
 function addReaction(messageId, emoji) {
-    const reactionsDiv = document.getElementById(`reactions-${messageId}`);
-    if (reactionsDiv) {
-        const existingReaction = reactionsDiv.querySelector(`[data-emoji="${emoji}"]`);
-        if (existingReaction) {
-            const count = parseInt(existingReaction.textContent) + 1;
-            existingReaction.textContent = `${emoji} ${count}`;
-        } else {
-            const reaction = document.createElement('span');
-            reaction.className = 'reaction';
-            reaction.dataset.emoji = emoji;
-            reaction.textContent = `${emoji} 1`;
-            reactionsDiv.appendChild(reaction);
-        }
+    const reactionsDiv = byId(`reactions-${messageId}`);
+    if (!reactionsDiv) return;
+
+    let reaction = reactionsDiv.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
+
+    if (reaction) {
+        const nextCount = Number(reaction.dataset.count || '1') + 1;
+
+        reaction.dataset.count = String(nextCount);
+        reaction.textContent = `${emoji} ${nextCount}`;
+    } else {
+        reaction = document.createElement('span');
+
+        reaction.className = 'reaction';
+        reaction.dataset.emoji = emoji;
+        reaction.dataset.count = '1';
+        reaction.textContent = `${emoji} 1`;
+
+        reactionsDiv.appendChild(reaction);
     }
-    
-    // Remove picker
-    const picker = document.querySelector('.emoji-picker');
-    if (picker) picker.remove();
+
+    $('.emoji-picker')?.remove();
 }
 
-function handleKeyPress(event) {
-    if (event.key === 'Enter') {
+function handleMessageKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
         sendMessage();
     }
 }
 
-function toggleSearch() {
-    const searchBar = document.getElementById('searchBar');
-    searchBar.classList.toggle('hidden');
-    if (!searchBar.classList.contains('hidden')) {
-        document.getElementById('messageSearch').focus();
-    }
+function handleKeyPress(event) {
+    handleMessageKeyDown(event);
 }
 
-function searchMessages() {
-    const searchTerm = document.getElementById('messageSearch').value.toLowerCase();
-    const messages = document.querySelectorAll('#chatMessages .message:not(.system)');
-    
-    messages.forEach(msg => {
-        const content = msg.textContent.toLowerCase();
-        if (searchTerm && content.includes(searchTerm)) {
-            msg.style.display = 'block';
-            msg.classList.add('search-highlight');
-        } else if (searchTerm) {
-            msg.style.display = 'none';
-        } else {
-            msg.style.display = 'block';
-            msg.classList.remove('search-highlight');
-        }
+function toggleSearch() {
+    const searchBar = byId('searchBar');
+
+    searchBar?.classList.toggle('hidden');
+
+    if (!searchBar?.classList.contains('hidden')) byId('messageSearch')?.focus();
+}
+
+function searchVisibleMessages() {
+    const searchTerm = (byId('messageSearch')?.value || '').toLowerCase();
+
+    $$('#chatMessages .message:not(.system)').forEach(message => {
+        const match = !searchTerm || message.textContent.toLowerCase().includes(searchTerm);
+
+        message.style.display = match ? 'block' : 'none';
+        message.classList.toggle('search-highlight', Boolean(searchTerm && match));
     });
 }
 
 function clearSearch() {
-    document.getElementById('messageSearch').value = '';
-    searchMessages();
-    document.getElementById('searchBar').classList.add('hidden');
+    setValue('messageSearch', '');
+    searchVisibleMessages();
+    byId('searchBar')?.classList.add('hidden');
 }
 
-let typingTimeout;
+function searchMessages(term) {
+    const query = String(term || '').trim().toLowerCase();
+
+    if (!query) return;
+
+    const results = messageHistory.filter(message => String(message.content || '').toLowerCase().includes(query));
+
+    if (!results.length) return showToast('No messages found.', 'info');
+
+    showToast(`Found ${results.length} message${results.length === 1 ? '' : 's'}.`, 'success');
+
+    const target = document.querySelector(`[data-message-id="${cssEscape(results[0].id)}"]`);
+
+    if (target) {
+        target.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+        });
+
+        target.animate([
+            {
+                transform: 'scale(1)',
+                boxShadow: 'var(--shadow-soft)'
+            },
+            {
+                transform: 'scale(1.018)',
+                boxShadow: 'var(--shadow), var(--glow)'
+            },
+            {
+                transform: 'scale(1)',
+                boxShadow: 'var(--shadow-soft)'
+            }
+        ], {
+            duration: 900,
+            iterations: 2
+        });
+    }
+}
+
 function handleTyping() {
-    // Send typing indicator to server (would need WebSocket implementation)
     clearTimeout(typingTimeout);
-    typingTimeout = setTimeout(() => {
-        // Stop typing indicator after 2 seconds of no typing
-    }, 2000);
+    typingTimeout = setTimeout(() => {}, 1200);
 }
 
 function toggleEmojiPicker() {
-    const input = document.getElementById('messageInput');
-    const emojis = ['😀', '😂', '😍', '👍', '🎉', '🔥', '❤️', '👋', '🤔', '😎', '🙏', '💯'];
-    
-    // Simple emoji picker - insert random emoji for now
-    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
-    input.value += emoji;
+    const input = byId('messageInput');
+    if (!input) return;
+
+    const emoji = UI.emojiSet[Math.floor(Math.random() * UI.emojiSet.length)];
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+
+    input.value = `${input.value.slice(0, start)}${emoji}${input.value.slice(end)}`;
+
     input.focus();
+
+    input.selectionStart = input.selectionEnd = start + emoji.length;
 }
 
 function replyToMessage(messageId) {
-    const message = messageHistory.find(m => m.id === messageId);
-    if (message) {
-        replyingTo = message;
-        const input = document.getElementById('messageInput');
-        input.placeholder = `Replying to ${message.sender}...`;
+    const message = messageHistory.find(item => String(item.id) === String(messageId));
+
+    if (!message) return;
+
+    replyingTo = message;
+
+    const input = byId('messageInput');
+
+    if (input) {
+        input.placeholder = `Replying to ${message.sender} — Esc to cancel`;
         input.focus();
-        showToast('Reply mode enabled', 'info');
     }
+
+    showToast('Reply mode enabled.', 'info');
 }
 
 function quoteMessage(messageId) {
-    const message = messageHistory.find(m => m.id === messageId);
-    if (message) {
-        const input = document.getElementById('messageInput');
-        input.value = `> ${message.content}\n\n`;
-        input.focus();
-    }
+    const message = messageHistory.find(item => String(item.id) === String(messageId));
+    if (!message) return;
+
+    const input = byId('messageInput');
+    if (!input) return;
+
+    input.value = `> ${message.content}\n\n`;
+    input.focus();
+}
+
+function resetReplyMode() {
+    replyingTo = null;
+
+    const input = byId('messageInput');
+    if (input) input.placeholder = 'Type a message...';
 }
 
 function playNotificationSound() {
-    // Create a simple beep sound using Web Audio API
     try {
         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        oscillator.frequency.value = 800;
+        const gain = audioContext.createGain();
+
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+
+        oscillator.frequency.value = 880;
         oscillator.type = 'sine';
-        gainNode.gain.value = 0.1;
-        
+
+        gain.gain.setValueAtTime(0.001, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.075, audioContext.currentTime + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.12);
+
         oscillator.start();
-        oscillator.stop(audioContext.currentTime + 0.1);
-    } catch (e) {
-        console.error('Could not play sound:', e);
+        oscillator.stop(audioContext.currentTime + 0.13);
+    } catch (error) {
+        console.error('Could not play sound:', error);
     }
 }
 
 function toggleSound() {
-    soundEnabled = !soundEnabled;
-    localStorage.setItem('soundEnabled', soundEnabled);
-    showToast(soundEnabled ? 'Sound enabled' : 'Sound disabled', 'info');
+    soundEnabled = byId('soundToggle') ? byId('soundToggle').checked : !soundEnabled;
+
+    localStorage.setItem('soundEnabled', String(soundEnabled));
+
+    showToast(soundEnabled ? 'Sound enabled.' : 'Sound disabled.', 'info');
 }
 
-function loadMessageHistory() {
-    const saved = localStorage.getItem('messageHistory');
-    if (saved) {
-        try {
-            messageHistory = JSON.parse(saved);
-        } catch (e) {
-            console.error('Error loading message history:', e);
-        }
-    }
-}
-
-// File Upload
 function showFileUpload() {
-    const modal = new bootstrap.Modal(document.getElementById('fileUploadModal'));
-    modal.show();
+    const modalEl = byId('fileUploadModal');
+
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+
+    new bootstrap.Modal(modalEl).show();
 }
 
 function handleFileSelect(event) {
-    const file = event.target.files[0];
-    if (file) {
-        document.getElementById('fileInfo').classList.remove('hidden');
-        document.getElementById('fileName').textContent = file.name;
-        document.getElementById('fileSize').textContent = formatFileSize(file.size);
+    const file = event.target.files?.[0];
+
+    if (file) populateFileInfo(file);
+}
+
+function populateFileInfo(file, previewSrc = null) {
+    byId('fileInfo')?.classList.remove('hidden');
+
+    setText('fileName', file.name);
+    setText('fileSize', formatFileSize(file.size));
+
+    $$('#fileInfo .image-preview').forEach(img => img.remove());
+
+    if (previewSrc) {
+        const preview = document.createElement('img');
+
+        preview.src = previewSrc;
+        preview.className = 'image-preview';
+
+        byId('fileInfo')?.prepend(preview);
     }
 }
 
 function uploadFile() {
-    showToast('File upload requires WebSocket integration', 'info');
-    showToast('This feature is coming soon', 'info');
-    
-    const modal = bootstrap.Modal.getInstance(document.getElementById('fileUploadModal'));
-    modal.hide();
+    const progress = byId('uploadProgress');
+
+    if (progress) progress.style.width = '100%';
+
+    showToast('File upload requires relay/WebSocket integration.', 'info');
+
+    const modal = bootstrap?.Modal?.getInstance(byId('fileUploadModal'));
+
+    modal?.hide();
+
+    setTimeout(() => {
+        if (progress) progress.style.width = '0%';
+    }, 500);
 }
 
-// Participants
 function showParticipants() {
-    showToast('Participant list will be updated as people join', 'info');
+    showToast('Participant list updates when the relay publishes join events.', 'info');
 }
 
-// Settings
 async function saveSettings() {
-    const displayName = document.getElementById('settingsDisplayName').value;
-    const maxFileSize = document.getElementById('maxFileSize').value;
+    const displayName = byId('settingsDisplayName')?.value.trim() || 'User';
+    const maxFileSize = byId('maxFileSize')?.value || '100';
 
     try {
         const response = await fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ display_name: displayName, max_file_size: maxFileSize })
+            body: JSON.stringify({
+                display_name: displayName,
+                max_file_size: maxFileSize
+            })
         });
 
-        const data = await response.json();
+        const data = await safeResponseJSON(response);
 
-        if (data.success) {
-            document.getElementById('currentUser').textContent = displayName;
-            showToast('Settings saved!', 'success');
+        if (data?.success) {
+            setText('currentUser', displayName);
+            renderParticipantSelf(displayName, byId('identityFingerprint')?.textContent || '');
+            showToast('Settings saved.', 'success');
         } else {
-            showToast(data.error || 'Failed to save settings', 'danger');
+            showToast(data?.error || 'Failed to save settings.', 'danger');
         }
     } catch (error) {
-        showToast('Error saving settings', 'danger');
+        showToast('Error saving settings.', 'danger');
     }
 }
 
-// Utility Functions
+function syncSettingsControls() {
+    if (byId('soundToggle')) byId('soundToggle').checked = soundEnabled;
+    if (byId('themeToggle')) byId('themeToggle').checked = currentTheme === 'dark';
+}
+
 function showToast(message, type = 'info') {
-    const toastContainer = document.getElementById('toastContainer');
-    const toastId = 'toast-' + Date.now();
-    
-    const toastHTML = `
-        <div id="${toastId}" class="toast align-items-center text-white bg-${type} border-0" role="alert">
-            <div class="d-flex">
-                <div class="toast-body">
-                    ${message}
-                </div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-            </div>
+    const toastContainer = byId('toastContainer');
+
+    if (!toastContainer || typeof bootstrap === 'undefined') {
+        return console.log(`[${type}] ${message}`);
+    }
+
+    const toastEl = document.createElement('div');
+
+    toastEl.className = 'toast align-items-center border-0';
+    toastEl.setAttribute('role', 'alert');
+
+    toastEl.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body"></div>
+            <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
         </div>
     `;
-    
-    toastContainer.insertAdjacentHTML('beforeend', toastHTML);
-    
-    const toastElement = document.getElementById(toastId);
-    const toast = new bootstrap.Toast(toastElement, { delay: 3000 });
-    toast.show();
-    
-    toastElement.addEventListener('hidden.bs.toast', () => {
-        toastElement.remove();
+
+    $('.toast-body', toastEl).textContent = message;
+
+    const iconMap = {
+        success: 'bi-check-circle',
+        danger: 'bi-x-octagon',
+        warning: 'bi-exclamation-triangle',
+        info: 'bi-info-circle'
+    };
+
+    $('.toast-body', toastEl).insertAdjacentHTML('afterbegin', `<i class="bi ${iconMap[type] || iconMap.info} me-2"></i>`);
+
+    toastContainer.appendChild(toastEl);
+
+    const toast = new bootstrap.Toast(toastEl, {
+        delay: 3200
     });
+
+    toast.show();
+
+    toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
-
-// Theme Management
 function toggleTheme() {
     currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+
     localStorage.setItem('theme', currentTheme);
+
     applyTheme();
 }
 
 function applyTheme() {
     document.documentElement.setAttribute('data-theme', currentTheme);
-    const icon = document.getElementById('themeIcon');
-    if (icon) {
-        icon.className = currentTheme === 'light' ? 'bi bi-moon-stars' : 'bi bi-sun';
-    }
+
+    const icon = byId('themeIcon');
+
+    if (icon) icon.className = currentTheme === 'light' ? 'bi bi-moon-stars' : 'bi bi-sun';
+
+    if (byId('themeToggle')) byId('themeToggle').checked = currentTheme === 'dark';
 }
 
-// Keyboard Shortcuts
 function setupKeyboardShortcuts() {
-    document.addEventListener('keydown', function(e) {
-        // Ctrl + D: Toggle theme
-        if (e.ctrlKey && e.key === 'd') {
-            e.preventDefault();
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            if (replyingTo) resetReplyMode();
+            if (!byId('shortcutsPanel')?.classList.contains('hidden')) toggleShortcuts();
+        }
+
+        if (!event.ctrlKey) return;
+
+        const key = event.key.toLowerCase();
+
+        if (key === 'd') {
+            event.preventDefault();
             toggleTheme();
         }
-        
-        // Ctrl + F: Search messages
-        if (e.ctrlKey && e.key === 'f') {
-            e.preventDefault();
-            showSearch();
+
+        if (key === 'f') {
+            event.preventDefault();
+            toggleSearch();
         }
-        
-        // Ctrl + U: Upload file
-        if (e.ctrlKey && e.key === 'u') {
-            e.preventDefault();
+
+        if (key === 'u') {
+            event.preventDefault();
             showFileUpload();
         }
-        
-        // Ctrl + L: Leave room
-        if (e.ctrlKey && e.key === 'l') {
-            e.preventDefault();
+
+        if (key === 'l') {
+            event.preventDefault();
             leaveRoom();
         }
-        
-        // Ctrl + /: Show shortcuts
-        if (e.ctrlKey && e.key === '/') {
-            e.preventDefault();
+
+        if (key === '/') {
+            event.preventDefault();
             toggleShortcuts();
-        }
-        
-        // Escape: Close modals/panels
-        if (e.key === 'Escape') {
-            const shortcutsPanel = document.getElementById('shortcutsPanel');
-            if (shortcutsPanel && !shortcutsPanel.classList.contains('hidden')) {
-                toggleShortcuts();
-            }
         }
     });
 }
 
 function toggleShortcuts() {
-    const panel = document.getElementById('shortcutsPanel');
-    panel.classList.toggle('hidden');
+    byId('shortcutsPanel')?.classList.toggle('hidden');
 }
 
-function showSearch() {
-    const searchTerm = prompt('Search messages:');
-    if (searchTerm) {
-        searchMessages(searchTerm);
-    }
-}
-
-function searchMessages(term) {
-    const results = messageHistory.filter(msg => 
-        msg.content.toLowerCase().includes(term.toLowerCase())
-    );
-    
-    if (results.length === 0) {
-        showToast('No messages found', 'info');
-        return;
-    }
-    
-    showToast(`Found ${results.length} messages`, 'success');
-    
-    // Highlight first result
-    const firstResult = results[0];
-    const messageDiv = document.querySelector(`[data-message-id="${firstResult.id}"]`);
-    if (messageDiv) {
-        messageDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        messageDiv.style.animation = 'pulse 0.5s ease 3';
-        setTimeout(() => messageDiv.style.animation = '', 1500);
-    }
-}
-
-// Drag and Drop
 function setupDragAndDrop() {
-    const chatContainer = document.getElementById('chatMessages');
+    const chatContainer = byId('chatMessages');
+
     if (!chatContainer) return;
 
-    chatContainer.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        chatContainer.classList.add('drag-over');
+    ['dragover', 'dragleave', 'drop'].forEach(eventName => {
+        chatContainer.addEventListener(eventName, (event) => event.preventDefault());
     });
 
-    chatContainer.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        chatContainer.classList.remove('drag-over');
-    });
+    chatContainer.addEventListener('dragover', () => chatContainer.classList.add('drag-over'));
+    chatContainer.addEventListener('dragleave', () => chatContainer.classList.remove('drag-over'));
 
-    chatContainer.addEventListener('drop', (e) => {
-        e.preventDefault();
+    chatContainer.addEventListener('drop', (event) => {
         chatContainer.classList.remove('drag-over');
-        
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleDroppedFile(files[0]);
-        }
+
+        const file = event.dataTransfer.files?.[0];
+
+        if (file) handleDroppedFile(file);
     });
 }
 
 function handleDroppedFile(file) {
+    const modalEl = byId('fileUploadModal');
+
+    if (modalEl && typeof bootstrap !== 'undefined') new bootstrap.Modal(modalEl).show();
+
     if (file.type.startsWith('image/')) {
         const reader = new FileReader();
-        reader.onload = (e) => {
-            const modal = new bootstrap.Modal(document.getElementById('fileUploadModal'));
-            modal.show();
-            
-            document.getElementById('fileInfo').classList.remove('hidden');
-            document.getElementById('fileName').textContent = file.name;
-            document.getElementById('fileSize').textContent = formatFileSize(file.size);
-            
-            // Add image preview
-            const preview = document.createElement('img');
-            preview.src = e.target.result;
-            preview.className = 'image-preview';
-            document.getElementById('fileInfo').insertBefore(preview, document.getElementById('fileInfo').firstChild);
-        };
+
+        reader.onload = (event) => populateFileInfo(file, event.target.result);
         reader.readAsDataURL(file);
     } else {
-        showToast('File dropped - upload feature coming soon', 'info');
+        populateFileInfo(file);
     }
+}
+
+function renderParticipantSelf(displayName, fingerprint) {
+    const participantList = byId('participantList');
+
+    if (!participantList) return;
+
+    const initial = (displayName || 'Y').charAt(0).toUpperCase();
+
+    participantList.innerHTML = `
+        <div class="participant-item">
+            <div class="participant-avatar"></div>
+
+            <div class="min-w-0">
+                <div class="fw-bold participant-name"></div>
+                <small class="text-muted" id="yourFingerprint"></small>
+            </div>
+        </div>
+    `;
+
+    $('.participant-avatar', participantList).textContent = initial;
+    $('.participant-name', participantList).textContent = displayName || 'You';
+
+    setText('yourFingerprint', fingerprint ? `${fingerprint.substring(0, 18)}...` : 'fingerprint unavailable');
+}
+
+function safeJSON(raw, fallback) {
+    try {
+        return raw ? JSON.parse(raw) : fallback;
+    } catch (_) {
+        return fallback;
+    }
+}
+
+async function safeResponseJSON(response) {
+    const text = await response.text();
+
+    try {
+        return text ? JSON.parse(text) : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function escapeHtml(value) {
+    const div = document.createElement('div');
+
+    div.textContent = String(value ?? '');
+
+    return div.innerHTML;
+}
+
+function cssEscape(value) {
+    return typeof CSS !== 'undefined' && CSS.escape
+        ? CSS.escape(String(value))
+        : String(value).replace(/"/g, '\\"');
+}
+
+function formatFileSize(bytes) {
+    if (!bytes) return '0 Bytes';
+
+    const units = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+
+    return `${Math.round((bytes / Math.pow(1024, index)) * 100) / 100} ${units[index]}`;
+}
+
+function setText(id, value) {
+    const element = byId(id);
+
+    if (element) element.textContent = value ?? '';
+}
+
+function setValue(id, value) {
+    const element = byId(id);
+
+    if (element) element.value = value ?? '';
 }
