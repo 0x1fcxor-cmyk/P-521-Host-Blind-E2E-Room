@@ -104,6 +104,8 @@ class BlindRelayServer:
         self.token = token
         self.clients: Dict[str, object] = {}
         self.rate_limits: Dict[str, list] = {}
+        self.banned_clients: Dict[str, int] = {}
+        self.lock = asyncio.Lock()
         self.max_clients = 100
         self.rate_limit_window = 60  # seconds
         self.rate_limit_max = 100  # messages per window
@@ -267,3 +269,21 @@ class BlindRelayServer:
             self.rate_limits[client_id] = []
 
         self.rate_limits[client_id].append(now())
+
+    async def stats_loop(self) -> None:
+        """
+        Periodically log relay statistics
+        """
+        while True:
+            await asyncio.sleep(15)
+
+            async with self.lock:
+                count = len(self.clients)
+
+            info(
+                f"Blind relay stats: clients={count}, relayed_packets={self.relayed_packets}, started={self.started_at}, banned={len(self.banned_clients)}"
+            )
+            
+            # Health check
+            self.last_health_check = now()
+            self.healthy = True
